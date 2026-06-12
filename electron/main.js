@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, shell, session } = require('electron');
 const path = require('node:path');
 
 const APP_NAME = '快擎浏览器';
@@ -45,7 +45,13 @@ function createMainWindow() {
     event.preventDefault();
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'index.html'));
+  const rendererUrl = process.env.QUICK_ENGINE_RENDERER_URL;
+
+  if (rendererUrl) {
+    mainWindow.loadURL(rendererUrl);
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '..', 'renderer-dist', 'index.html'));
+  }
 
   return mainWindow;
 }
@@ -70,6 +76,25 @@ app.on('window-all-closed', () => {
 });
 
 ipcMain.handle('app:get-version', () => app.getVersion());
+
+ipcMain.handle('app:get-version-info', () => ({
+  appName: APP_NAME,
+  appVersion: app.getVersion(),
+  electron: process.versions.electron,
+  chromium: process.versions.chrome,
+  node: process.versions.node,
+  v8: process.versions.v8,
+  uv: process.versions.uv,
+  zlib: process.versions.zlib,
+  openssl: process.versions.openssl,
+  platform: process.platform,
+  arch: process.arch,
+  userAgent: session.defaultSession.getUserAgent(),
+  executablePath: process.execPath,
+  appPath: app.getAppPath(),
+  userDataPath: app.getPath('userData'),
+  commandLine: process.argv.join(' ')
+}));
 
 ipcMain.on('app:open-external', (_event, url) => {
   if (isExternalUrl(url)) {

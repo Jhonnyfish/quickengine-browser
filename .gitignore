@@ -1,6 +1,11 @@
 node_modules/
+renderer-dist/
 dist/
 out/
+.cache/
+.agents/
+.claude/
+skills-lock.json
 *.log
 .DS_Store
 Thumbs.db
