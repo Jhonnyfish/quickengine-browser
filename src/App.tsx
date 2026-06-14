@@ -2,17 +2,19 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   BadgeInfoIcon,
+  BookmarkIcon,
   BotIcon,
   CalendarDaysIcon,
   CloudIcon,
   DownloadIcon,
   FileTextIcon,
+  FolderIcon,
   GlobeIcon,
+  HistoryIcon,
   HomeIcon,
   LoaderCircleIcon,
   LockKeyholeIcon,
   MailIcon,
-  MonitorIcon,
   NewspaperIcon,
   PackageIcon,
   PlusIcon,
@@ -22,6 +24,7 @@ import {
   SparklesIcon,
   SquareIcon,
   StarIcon,
+  TrashIcon,
   UsersIcon,
   XIcon,
   ZapIcon,
@@ -37,6 +40,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import type { Bookmark, DownloadItem, HistoryEntry } from "./types/electron"
 
 const NEW_TAB_URL = "kuaiqing://newtab"
 const HOME_URL = NEW_TAB_URL
@@ -457,9 +461,13 @@ function ToolButton({
 function NewTabPage({
   onNavigate,
   onSubmitInput,
+  bookmarks,
+  history,
 }: {
   onNavigate: (url: string) => void
   onSubmitInput: (value: string) => void
+  bookmarks: Bookmark[]
+  history: HistoryEntry[]
 }) {
   const [draft, setDraft] = useState("")
 
@@ -467,6 +475,13 @@ function NewTabPage({
     event.preventDefault()
     onSubmitInput(draft)
   }
+
+  const pinnedShortcuts = bookmarks.slice(0, 8)
+  const recentShortcuts = history
+    .filter((entry) => !bookmarks.some((bookmark) => bookmark.url === entry.url))
+    .slice(0, pinnedShortcuts.length === 0 ? 8 : Math.max(0, 8 - pinnedShortcuts.length))
+
+  const hasShortcuts = pinnedShortcuts.length > 0 || recentShortcuts.length > 0
 
   return (
     <section className="newtab-page" aria-label="快擎新标签页">
@@ -513,6 +528,44 @@ function NewTabPage({
           })}
         </div>
 
+        {hasShortcuts ? (
+          <section className="newtab-shortcuts" aria-label="我的快捷入口">
+            <div className="newtab-shortcuts-header">
+              <h2>我的快捷入口</h2>
+            </div>
+            <div className="newtab-shortcut-grid">
+              {pinnedShortcuts.map((bookmark) => (
+                <button
+                  key={bookmark.id}
+                  className="newtab-shortcut"
+                  title={bookmark.url}
+                  type="button"
+                  onClick={() => onNavigate(bookmark.url)}
+                >
+                  <span className="newtab-shortcut-icon">
+                    <EntryFavicon src={bookmark.favicon} />
+                  </span>
+                  <span className="newtab-shortcut-label">{bookmark.title}</span>
+                </button>
+              ))}
+              {recentShortcuts.map((entry) => (
+                <button
+                  key={entry.url}
+                  className="newtab-shortcut"
+                  title={entry.url}
+                  type="button"
+                  onClick={() => onNavigate(entry.url)}
+                >
+                  <span className="newtab-shortcut-icon">
+                    <EntryFavicon src={entry.favicon} />
+                  </span>
+                  <span className="newtab-shortcut-label">{entry.title}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         <div className="newtab-divider" />
 
         <section className="recommendations" aria-label="为你推荐">
@@ -538,6 +591,407 @@ function NewTabPage({
   )
 }
 
+function formatBytes(bytes: number) {
+  if (!bytes || bytes <= 0) return "0 B"
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+const DOWNLOAD_STATE_LABEL: Record<string, string> = {
+  progressing: "下载中",
+  completed: "已完成",
+  interrupted: "已中断",
+  canceled: "已取消",
+}
+
+function getDownloadPercent(item: DownloadItem) {
+  if (!item.totalBytes) return null
+  return Math.min(100, Math.max(0, Math.round((item.receivedBytes / item.totalBytes) * 100)))
+}
+
+type DownloadAction = "openFile" | "openFolder" | "cancel" | "retry" | "remove"
+
+function DownloadRow({
+  item,
+  onAction,
+}: {
+  item: DownloadItem
+  onAction: (action: DownloadAction, id: string) => void
+}) {
+  const percent = getDownloadPercent(item)
+  const isActive = item.state === "progressing"
+
+  return (
+    <li className="download-row" data-state={item.state}>
+      <div className="download-row-main">
+        <div className="download-row-name" title={item.filename}>
+          {item.filename}
+        </div>
+        <div className="download-row-meta">
+          {isActive
+            ? percent !== null
+              ? `${percent}% · ${formatBytes(item.receivedBytes)} / ${formatBytes(item.totalBytes ?? 0)}`
+              : `${formatBytes(item.receivedBytes)} 已下载`
+            : DOWNLOAD_STATE_LABEL[item.state] ?? item.state}
+        </div>
+        {isActive && (
+          <div className="download-row-progress" aria-hidden="true">
+            <div
+              className="download-row-progress-bar"
+              style={percent !== null ? { width: `${percent}%` } : { width: "100%", opacity: 0.35 }}
+            />
+          </div>
+        )}
+      </div>
+      <div className="download-row-actions">
+        {item.state === "completed" && (
+          <>
+            <Button
+              aria-label="打开文件"
+              size="icon-xs"
+              title="打开文件"
+              variant="ghost"
+              onClick={() => onAction("openFile", item.id)}
+            >
+              <FileTextIcon aria-hidden="true" />
+            </Button>
+            <Button
+              aria-label="打开所在文件夹"
+              size="icon-xs"
+              title="打开所在文件夹"
+              variant="ghost"
+              onClick={() => onAction("openFolder", item.id)}
+            >
+              <FolderIcon aria-hidden="true" />
+            </Button>
+          </>
+        )}
+        {isActive && (
+          <Button
+            aria-label="取消下载"
+            size="icon-xs"
+            title="取消"
+            variant="ghost"
+            onClick={() => onAction("cancel", item.id)}
+          >
+            <XIcon aria-hidden="true" />
+          </Button>
+        )}
+        {(item.state === "interrupted" || item.state === "canceled") && (
+          <Button
+            aria-label="重试下载"
+            size="icon-xs"
+            title="重试"
+            variant="ghost"
+            onClick={() => onAction("retry", item.id)}
+          >
+            <RefreshCwIcon aria-hidden="true" />
+          </Button>
+        )}
+        <Button
+          aria-label="从列表移除"
+          size="icon-xs"
+          title="移除"
+          variant="ghost"
+          onClick={() => onAction("remove", item.id)}
+        >
+          <TrashIcon aria-hidden="true" />
+        </Button>
+      </div>
+    </li>
+  )
+}
+
+function DownloadsPanel({
+  items,
+  open,
+  onClose,
+  onAction,
+}: {
+  items: DownloadItem[]
+  open: boolean
+  onClose: () => void
+  onAction: (action: DownloadAction, id: string) => void
+}) {
+  if (!open) return null
+
+  const activeCount = items.filter((item) => item.state === "progressing").length
+
+  return (
+    <section className="downloads-panel" role="dialog" aria-label="下载管理">
+      <header className="downloads-panel-header">
+        <div className="downloads-panel-title">
+          <DownloadIcon aria-hidden="true" />
+          <h2>下载</h2>
+          {activeCount > 0 && (
+            <span className="downloads-panel-count">{activeCount} 个进行中</span>
+          )}
+        </div>
+        <Button aria-label="关闭下载面板" size="icon-xs" variant="ghost" onClick={onClose}>
+          <XIcon aria-hidden="true" />
+        </Button>
+      </header>
+      <ul className="downloads-list">
+        {items.length === 0 ? (
+          <li className="downloads-empty">暂无下载</li>
+        ) : (
+          items.map((item) => (
+            <DownloadRow key={item.id} item={item} onAction={onAction} />
+          ))
+        )}
+      </ul>
+    </section>
+  )
+}
+
+function isRecordableUrl(url: string) {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+  } catch {
+    return false
+  }
+}
+
+function formatRelativeTime(timestamp: number) {
+  const delta = Date.now() - timestamp
+  if (delta < 60_000) return "刚刚"
+  if (delta < 3600_000) return `${Math.floor(delta / 60_000)} 分钟前`
+  if (delta < 86_400_000) return `${Math.floor(delta / 3600_000)} 小时前`
+  if (delta < 7 * 86_400_000) return `${Math.floor(delta / 86_400_000)} 天前`
+  try {
+    return new Date(timestamp).toLocaleDateString("zh-CN")
+  } catch {
+    return ""
+  }
+}
+
+type EntryListItem =
+  | { kind: "history"; entry: HistoryEntry }
+  | { kind: "bookmark"; entry: Bookmark }
+
+function EntryFavicon({ src, alt = "" }: { src?: string; alt?: string }) {
+  if (src) {
+    return <img alt={alt} className="entry-favicon-img" src={src} />
+  }
+  return <GlobeIcon aria-hidden="true" />
+}
+
+function EntryRow({
+  item,
+  onOpen,
+  onRemove,
+  extra,
+}: {
+  item: EntryListItem
+  onOpen: (url: string) => void
+  onRemove: () => void
+  extra?: React.ReactNode
+}) {
+  const { entry } = item
+  return (
+    <li className="entry-row" data-kind={item.kind}>
+      <button
+        type="button"
+        className="entry-row-main"
+        title={entry.url}
+        onClick={() => onOpen(entry.url)}
+      >
+        <span className="entry-favicon">
+          <EntryFavicon src={entry.favicon} />
+        </span>
+        <span className="entry-row-text">
+          <span className="entry-row-title">{entry.title}</span>
+          <span className="entry-row-url">{entry.url}</span>
+        </span>
+        {extra}
+      </button>
+      <Button
+        aria-label="移除"
+        size="icon-xs"
+        title="移除"
+        variant="ghost"
+        onClick={onRemove}
+      >
+        <XIcon aria-hidden="true" />
+      </Button>
+    </li>
+  )
+}
+
+function DataPanelShell({
+  icon,
+  title,
+  open,
+  onClose,
+  searchValue,
+  onSearchChange,
+  searchPlaceholder,
+  headerActions,
+  children,
+}: {
+  icon: React.ReactNode
+  title: string
+  open: boolean
+  onClose: () => void
+  searchValue: string
+  onSearchChange: (value: string) => void
+  searchPlaceholder: string
+  headerActions?: React.ReactNode
+  children: React.ReactNode
+}) {
+  if (!open) return null
+  return (
+    <section className="data-panel" role="dialog" aria-label={title}>
+      <header className="data-panel-header">
+        <div className="data-panel-title">
+          {icon}
+          <h2>{title}</h2>
+        </div>
+        <div className="data-panel-actions">
+          {headerActions}
+          <Button aria-label="关闭" size="icon-xs" variant="ghost" onClick={onClose}>
+            <XIcon aria-hidden="true" />
+          </Button>
+        </div>
+      </header>
+      <div className="data-panel-search">
+        <SearchIcon aria-hidden="true" />
+        <input
+          aria-label={searchPlaceholder}
+          autoComplete="off"
+          placeholder={searchPlaceholder}
+          spellCheck={false}
+          value={searchValue}
+          onChange={(event) => onSearchChange(event.target.value)}
+        />
+      </div>
+      <ul className="data-panel-list">{children}</ul>
+    </section>
+  )
+}
+
+function HistoryPanel({
+  entries,
+  open,
+  onClose,
+  onOpen,
+  onRemove,
+  onClear,
+}: {
+  entries: HistoryEntry[]
+  open: boolean
+  onClose: () => void
+  onOpen: (url: string) => void
+  onRemove: (url: string) => void
+  onClear: () => void
+}) {
+  const [query, setQuery] = useState("")
+  const filtered = query.trim()
+    ? entries.filter(
+        (e) =>
+          e.url.toLowerCase().includes(query.toLowerCase()) ||
+          (e.title || "").toLowerCase().includes(query.toLowerCase()),
+      )
+    : entries
+
+  return (
+    <DataPanelShell
+      icon={<HistoryIcon aria-hidden="true" />}
+      title="历史记录"
+      open={open}
+      onClose={onClose}
+      searchValue={query}
+      onSearchChange={setQuery}
+      searchPlaceholder="搜索历史"
+      headerActions={
+        <Button
+          aria-label="清空全部"
+          size="icon-xs"
+          title="清空全部"
+          variant="ghost"
+          disabled={entries.length === 0}
+          onClick={onClear}
+        >
+          <TrashIcon aria-hidden="true" />
+        </Button>
+      }
+    >
+      {filtered.length === 0 ? (
+        <li className="data-panel-empty">
+          {entries.length === 0 ? "暂无历史" : "未找到匹配项"}
+        </li>
+      ) : (
+        filtered.map((entry) => (
+          <EntryRow
+            key={entry.url}
+            item={{ kind: "history", entry }}
+            onOpen={onOpen}
+            onRemove={() => onRemove(entry.url)}
+            extra={
+              <span className="entry-row-time">
+                {formatRelativeTime(entry.lastVisitedAt)}
+              </span>
+            }
+          />
+        ))
+      )}
+    </DataPanelShell>
+  )
+}
+
+function BookmarksPanel({
+  entries,
+  open,
+  onClose,
+  onOpen,
+  onRemove,
+}: {
+  entries: Bookmark[]
+  open: boolean
+  onClose: () => void
+  onOpen: (url: string) => void
+  onRemove: (id: string) => void
+}) {
+  const [query, setQuery] = useState("")
+  const filtered = query.trim()
+    ? entries.filter(
+        (b) =>
+          b.url.toLowerCase().includes(query.toLowerCase()) ||
+          (b.title || "").toLowerCase().includes(query.toLowerCase()),
+      )
+    : entries
+
+  return (
+    <DataPanelShell
+      icon={<BookmarkIcon aria-hidden="true" />}
+      title="书签"
+      open={open}
+      onClose={onClose}
+      searchValue={query}
+      onSearchChange={setQuery}
+      searchPlaceholder="搜索书签"
+    >
+      {filtered.length === 0 ? (
+        <li className="data-panel-empty">
+          {entries.length === 0 ? "暂无书签" : "未找到匹配项"}
+        </li>
+      ) : (
+        filtered.map((entry) => (
+          <EntryRow
+            key={entry.id}
+            item={{ kind: "bookmark", entry }}
+            onOpen={onOpen}
+            onRemove={() => onRemove(entry.id)}
+          />
+        ))
+      )}
+    </DataPanelShell>
+  )
+}
+
 export function App() {
   const browserStackRef = useRef<HTMLDivElement | null>(null)
   const webviewsRef = useRef(new Map<string, BrowserWebView>())
@@ -552,6 +1006,12 @@ export function App() {
   const [addressDraft, setAddressDraft] = useState("")
   const [statusMessage, setStatusMessage] = useState("")
   const [statusVisible, setStatusVisible] = useState(false)
+  const [downloads, setDownloads] = useState<DownloadItem[]>([])
+  const [history, setHistory] = useState<HistoryEntry[]>([])
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
+  const [activePanel, setActivePanel] = useState<null | "downloads" | "history" | "bookmarks">(null)
+  const [addressSuggestions, setAddressSuggestions] = useState<Array<{ url: string; title: string; favicon?: string; kind: "history" | "bookmark" }>>([])
+  const prevDownloadStatesRef = useRef(new Map<string, string>())
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
@@ -717,6 +1177,17 @@ export function App() {
     webview.addEventListener("did-stop-loading", () => {
       updateTab(tabId, { loading: false })
       updateNavigationState(tabId)
+
+      const tab = tabsRef.current.find((item) => item.id === tabId)
+      if (tab && !tab.internalPage && isRecordableUrl(tab.url)) {
+        void window.quickEngine.history
+          .record({
+            url: tab.url,
+            title: tab.title || tab.url,
+            favicon: tab.favicon || undefined,
+          })
+          .then(refreshHistory)
+      }
     })
 
     webview.addEventListener("did-navigate", (event) => {
@@ -877,6 +1348,7 @@ export function App() {
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    setAddressSuggestions([])
     submitAddressInput(addressDraft)
   }
 
@@ -900,6 +1372,151 @@ export function App() {
     initializedRef.current = true
     createTab(HOME_URL)
   }, [])
+
+  useEffect(() => {
+    let disposed = false
+    const unsubscribe = window.quickEngine.downloads.subscribe((items) => {
+      if (!disposed) setDownloads(items)
+    })
+    void window.quickEngine.downloads.list().then((items) => {
+      if (!disposed) setDownloads(items)
+    })
+    return () => {
+      disposed = true
+      unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    const prevStates = prevDownloadStatesRef.current
+    for (const item of downloads) {
+      const prev = prevStates.get(item.id)
+      if (prev === item.state) continue
+      if (!prev && item.state === "progressing") {
+        showStatus(`正在下载：${item.filename}`)
+      } else if (prev === "progressing" && item.state === "completed") {
+        showStatus(`下载完成：${item.filename}`)
+      } else if (
+        prev === "progressing" &&
+        (item.state === "interrupted" || item.state === "canceled")
+      ) {
+        showStatus(`下载未完成：${item.filename}`)
+      }
+      prevStates.set(item.id, item.state)
+    }
+  }, [downloads])
+
+  function handleDownloadAction(action: DownloadAction, id: string) {
+    const api = window.quickEngine.downloads
+    if (action === "openFile") void api.openFile(id)
+    else if (action === "openFolder") void api.openFolder(id)
+    else if (action === "cancel") void api.cancel(id)
+    else if (action === "retry") void api.retry(id)
+    else if (action === "remove") void api.remove(id)
+  }
+
+  const activeTabBookmarked = useMemo(
+    () =>
+      activeTab?.url
+        ? bookmarks.find((b) => b.url === activeTab.url) ?? null
+        : null,
+    [activeTab?.url, bookmarks],
+  )
+
+  useEffect(() => {
+    void window.quickEngine.history.list().then(setHistory)
+    void window.quickEngine.bookmarks.list().then(setBookmarks)
+  }, [])
+
+  useEffect(() => {
+    const draft = addressDraft.trim()
+    if (!draft) {
+      setAddressSuggestions([])
+      return
+    }
+    let disposed = false
+    const lower = draft.toLowerCase()
+    void window.quickEngine.history.search(draft).then((results) => {
+      if (disposed) return
+      const seen = new Set<string>()
+      const merged: Array<{ url: string; title: string; favicon?: string; kind: "history" | "bookmark" }> = []
+      for (const bm of bookmarks) {
+        if (seen.has(bm.url)) continue
+        if (
+          bm.url.toLowerCase().includes(lower) ||
+          (bm.title || "").toLowerCase().includes(lower)
+        ) {
+          seen.add(bm.url)
+          merged.push({ url: bm.url, title: bm.title, favicon: bm.favicon, kind: "bookmark" })
+        }
+      }
+      for (const h of results.slice(0, 8)) {
+        if (seen.has(h.url)) continue
+        seen.add(h.url)
+        merged.push({ url: h.url, title: h.title, favicon: h.favicon, kind: "history" })
+      }
+      setAddressSuggestions(merged.slice(0, 8))
+    })
+    return () => {
+      disposed = true
+    }
+  }, [addressDraft, bookmarks])
+
+  function refreshHistory() {
+    void window.quickEngine.history.list().then(setHistory)
+  }
+
+  function refreshBookmarks() {
+    void window.quickEngine.bookmarks.list().then(setBookmarks)
+  }
+
+  function toggleBookmark() {
+    if (!activeTab?.url || !isRecordableUrl(activeTab.url)) {
+      showStatus("无法收藏此页面")
+      return
+    }
+    if (activeTabBookmarked) {
+      void window.quickEngine.bookmarks.remove(activeTabBookmarked.id).then(refreshBookmarks)
+      showStatus("已取消收藏")
+    } else {
+      void window.quickEngine.bookmarks
+        .add({
+          url: activeTab.url,
+          title: activeTab.title || activeTab.url,
+          favicon: activeTab.favicon || undefined,
+        })
+        .then(refreshBookmarks)
+      showStatus("已加入书签")
+    }
+  }
+
+  function handleHistoryOpen(url: string) {
+    navigateActiveTab(url)
+    setActivePanel(null)
+  }
+
+  function handleHistoryRemove(url: string) {
+    void window.quickEngine.history.remove(url).then(refreshHistory)
+  }
+
+  function handleHistoryClear() {
+    void window.quickEngine.history.clear().then(refreshHistory)
+    showStatus("已清空历史记录")
+  }
+
+  function handleBookmarkOpen(url: string) {
+    navigateActiveTab(url)
+    setActivePanel(null)
+  }
+
+  function handleBookmarkRemove(id: string) {
+    void window.quickEngine.bookmarks.remove(id).then(refreshBookmarks)
+  }
+
+  function handleSuggestionPick(url: string) {
+    setAddressSuggestions([])
+    navigateActiveTab(url)
+  }
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -1058,38 +1675,81 @@ export function App() {
               </ToolButton>
             </div>
 
-            <div className="browser-address" data-security={security.variant}>
-              <SecurityIcon aria-hidden="true" />
-              <span className="security-label">{security.label}</span>
-              <input
-                autoComplete="off"
-                id="addressInput"
-                placeholder="输入网址或搜索"
-                spellCheck={false}
-                value={addressDraft}
-                onChange={(event) => setAddressDraft(event.target.value)}
-              />
-              <span className="keyboard-hint address-hint">Ctrl L</span>
-              <Button
-                aria-label="前往"
-                className="browser-address-submit"
-                size="icon-sm"
-                type="submit"
-                variant="ghost"
-              >
-                <SearchIcon aria-hidden="true" />
-              </Button>
+            <div className="browser-address-wrapper">
+              <div className="browser-address" data-security={security.variant}>
+                <SecurityIcon aria-hidden="true" />
+                <span className="security-label">{security.label}</span>
+                <input
+                  autoComplete="off"
+                  id="addressInput"
+                  placeholder="输入网址或搜索"
+                  spellCheck={false}
+                  value={addressDraft}
+                  onChange={(event) => setAddressDraft(event.target.value)}
+                />
+                <span className="keyboard-hint address-hint">Ctrl L</span>
+                <Button
+                  aria-label="前往"
+                  className="browser-address-submit"
+                  size="icon-sm"
+                  type="submit"
+                  variant="ghost"
+                >
+                  <SearchIcon aria-hidden="true" />
+                </Button>
+              </div>
+              {addressSuggestions.length > 0 ? (
+                <ul className="address-suggestions" role="listbox">
+                  {addressSuggestions.map((suggestion) => (
+                    <li key={suggestion.url}>
+                      <button
+                        type="button"
+                        className="address-suggestion"
+                        title={suggestion.url}
+                        onClick={() => handleSuggestionPick(suggestion.url)}
+                      >
+                        <span className="entry-favicon">
+                          <EntryFavicon src={suggestion.favicon} />
+                        </span>
+                        <span className="address-suggestion-text">
+                          <span className="address-suggestion-title">{suggestion.title}</span>
+                          <span className="address-suggestion-url">{suggestion.url}</span>
+                        </span>
+                        <span className="address-suggestion-kind">
+                          {suggestion.kind === "bookmark" ? "书签" : "历史"}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
 
             <div className="toolbar-actions">
-              <ToolButton label="收藏" onClick={() => showStatus("收藏功能将在后续版本提供")}>
+              <ToolButton
+                className={cn("is-bookmarked", activeTabBookmarked && "is-active")}
+                label={activeTabBookmarked ? "取消收藏" : "加入书签"}
+                onClick={toggleBookmark}
+              >
                 <StarIcon aria-hidden="true" />
               </ToolButton>
-              <ToolButton label="下载" onClick={() => showStatus("下载管理将在后续版本提供")}>
-                <DownloadIcon aria-hidden="true" />
+              <ToolButton
+                label="书签管理"
+                onClick={() => setActivePanel((value) => (value === "bookmarks" ? null : "bookmarks"))}
+              >
+                <BookmarkIcon aria-hidden="true" />
               </ToolButton>
-              <ToolButton label="阅读视图" onClick={() => showStatus("阅读视图将在后续版本提供")}>
-                <MonitorIcon aria-hidden="true" />
+              <ToolButton
+                label="历史记录"
+                onClick={() => setActivePanel((value) => (value === "history" ? null : "history"))}
+              >
+                <HistoryIcon aria-hidden="true" />
+              </ToolButton>
+              <ToolButton
+                label="下载"
+                onClick={() => setActivePanel((value) => (value === "downloads" ? null : "downloads"))}
+              >
+                <DownloadIcon aria-hidden="true" />
               </ToolButton>
               <div className="browser-avatar" aria-label="快擎账号">
                 擎
@@ -1101,8 +1761,34 @@ export function App() {
         <main className="browser-content">
           <div ref={browserStackRef} className="browser-stack" aria-label="网页内容" />
           {activeTab?.internalPage === "newtab" ? (
-            <NewTabPage onNavigate={navigateActiveTab} onSubmitInput={submitAddressInput} />
+            <NewTabPage
+              bookmarks={bookmarks}
+              history={history}
+              onNavigate={navigateActiveTab}
+              onSubmitInput={submitAddressInput}
+            />
           ) : null}
+          <DownloadsPanel
+            items={downloads}
+            open={activePanel === "downloads"}
+            onClose={() => setActivePanel(null)}
+            onAction={handleDownloadAction}
+          />
+          <HistoryPanel
+            entries={history}
+            open={activePanel === "history"}
+            onClose={() => setActivePanel(null)}
+            onOpen={handleHistoryOpen}
+            onRemove={handleHistoryRemove}
+            onClear={handleHistoryClear}
+          />
+          <BookmarksPanel
+            entries={bookmarks}
+            open={activePanel === "bookmarks"}
+            onClose={() => setActivePanel(null)}
+            onOpen={handleBookmarkOpen}
+            onRemove={handleBookmarkRemove}
+          />
           <div className={cn("status-text", statusVisible && "is-visible")} aria-live="polite">
             {statusMessage}
           </div>
