@@ -29,10 +29,10 @@
 
 ## 5. Regression Preservation
 
-- [ ] 5.1 Verify normal web URLs still load in webviews and update title, favicon, loading, back, and forward state.
-- [ ] 5.2 Verify search terms still navigate to the configured Baidu search URL.
-- [ ] 5.3 Verify `chrome://version` still displays app, Electron, Chromium, runtime, and path details.
-- [ ] 5.4 Verify tab switching, closing, and creating additional tabs works while the active tab is `kuaiqing://newtab`.
+- [x] 5.1 Verify normal web URLs still load in webviews and update title, favicon, loading, back, and forward state.
+- [x] 5.2 Verify search terms still navigate to the configured Baidu search URL.
+- [x] 5.3 Verify `chrome://version` still displays app, Electron, Chromium, runtime, and path details.
+- [x] 5.4 Verify tab switching, closing, and creating additional tabs works while the active tab is `kuaiqing://newtab`.
 
 ## 6. Validation
 
