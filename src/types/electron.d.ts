@@ -79,6 +79,77 @@ export type BookmarksApi = {
   update: (id: string, patch: { title?: string; folder?: string }) => Promise<void>
 }
 
+export type SearchEngineOption = {
+  id: string
+  label: string
+  template: string
+}
+
+export type StartupBehavior = 'new-tab' | 'restore-last-session' | 'configured-pages'
+
+export type StartupBehaviorOption = {
+  id: StartupBehavior
+  label: string
+}
+
+export type BrowserPreferences = {
+  searchEngine: string
+  startupBehavior: StartupBehavior
+  homePage: string
+  downloadDirectory: string
+  startupPages: string[]
+}
+
+export type PreferencesPatch = Partial<BrowserPreferences>
+
+export type SettingsApi = {
+  get: () => Promise<BrowserPreferences>
+  set: (patch: PreferencesPatch) => Promise<BrowserPreferences>
+  listSearchEngines: () => Promise<SearchEngineOption[]>
+  listStartupBehaviors: () => Promise<StartupBehaviorOption[]>
+  pickDownloadDirectory: () => Promise<string | null>
+  hasRestoreHandler: () => Promise<boolean>
+  invokeRestore: () => Promise<boolean>
+}
+
+export type SavedSessionTab = {
+  url: string
+  title: string
+  internalPage: string
+  active: boolean
+}
+
+export type SavedSession = {
+  tabs: SavedSessionTab[]
+  activeTabId: string | null
+  savedAt: number
+}
+
+export type RecentlyClosedTab = {
+  url: string
+  title: string
+  internalPage: string
+}
+
+export type SessionSnapshotInput = {
+  tabs: Array<{
+    id: string
+    url: string
+    title: string
+    internalPage: string
+  }>
+  activeTabId: string | null
+}
+
+export type SessionApi = {
+  save: (snapshot: SessionSnapshotInput) => Promise<boolean>
+  load: () => Promise<SavedSession | null>
+  clear: () => Promise<void>
+  pushRecentlyClosed: (entry: RecentlyClosedTab) => Promise<void>
+  listRecentlyClosed: () => Promise<RecentlyClosedTab[]>
+  popRecentlyClosed: () => Promise<RecentlyClosedTab | null>
+}
+
 export type QuickEngineApi = {
   getVersion: () => Promise<string>
   getVersionInfo: () => Promise<VersionInfo>
@@ -86,6 +157,8 @@ export type QuickEngineApi = {
   downloads: DownloadsApi
   history: HistoryApi
   bookmarks: BookmarksApi
+  settings: SettingsApi
+  session: SessionApi
 }
 
 declare global {

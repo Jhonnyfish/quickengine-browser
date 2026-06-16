@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, shell, session, webContents } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, shell, session, webContents, dialog } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -73,10 +73,125 @@ function downloadsFilePath() {
 }
 
 function getDownloadDirectory() {
-  // TODO(browser-settings): consume configured download directory once the
-  // settings feature is implemented. Fall back to the OS default for now.
-  return app.getPath('downloads');
+  return getPreferences().downloadDirectory || app.getPath('downloads');
 }
+
+// ============ Preferences ============
+
+const PREFERENCES_VERSION = 1;
+
+const DEFAULT_PREFERENCES = {
+  searchEngine: 'baidu',
+  startupBehavior: 'new-tab',
+  homePage: 'kuaiqing://newtab',
+  downloadDirectory: '',
+  startupPages: []
+};
+
+const SEARCH_ENGINE_OPTIONS = [
+  { id: 'baidu', label: '百度', template: 'https://www.baidu.com/s?wd=' },
+  { id: 'google', label: 'Google', template: 'https://www.google.com/search?q=' },
+  { id: 'bing', label: '必应', template: 'https://www.bing.com/search?q=' },
+  { id: 'duckduckgo', label: 'DuckDuckGo', template: 'https://duckduckgo.com/?q=' }
+];
+
+const STARTUP_BEHAVIOR_OPTIONS = [
+  { id: 'new-tab', label: '打开新标签页' },
+  { id: 'restore-last-session', label: '恢复上次会话' },
+  { id: 'configured-pages', label: '打开指定页面' }
+];
+
+let preferences = { ...DEFAULT_PREFERENCES };
+let startupRestoreHandler = null;
+
+function preferencesFilePath() {
+  return path.join(app.getPath('userData'), 'preferences.json');
+}
+
+function coercePreferences(input) {
+  const source = input && typeof input === 'object' ? input : {};
+  const searchEngine = SEARCH_ENGINE_OPTIONS.find((opt) => opt.id === source.searchEngine)
+    ? source.searchEngine
+    : DEFAULT_PREFERENCES.searchEngine;
+
+  const startupBehavior = STARTUP_BEHAVIOR_OPTIONS.find((opt) => opt.id === source.startupBehavior)
+    ? source.startupBehavior
+    : DEFAULT_PREFERENCES.startupBehavior;
+
+  const homePage = typeof source.homePage === 'string' && source.homePage.trim()
+    ? source.homePage.trim()
+    : DEFAULT_PREFERENCES.homePage;
+
+  const downloadDirectory = typeof source.downloadDirectory === 'string'
+    ? source.downloadDirectory
+    : '';
+
+  const startupPages = Array.isArray(source.startupPages)
+    ? source.startupPages.filter((item) => typeof item === 'string' && item.trim()).slice(0, 10)
+    : [];
+
+  return {
+    searchEngine,
+    startupBehavior,
+    homePage,
+    downloadDirectory,
+    startupPages
+  };
+}
+
+function loadPreferences() {
+  try {
+    const raw = fs.readFileSync(preferencesFilePath(), 'utf8');
+    const data = JSON.parse(raw);
+    preferences = coercePreferences(data && typeof data === 'object' ? data : {});
+  } catch {
+    preferences = { ...DEFAULT_PREFERENCES };
+  }
+}
+
+function savePreferences() {
+  try {
+    const payload = JSON.stringify({
+      version: PREFERENCES_VERSION,
+      ...preferences
+    }, null, 2);
+    const filePath = preferencesFilePath();
+    const tmp = `${filePath}.tmp`;
+    fs.writeFileSync(tmp, payload, 'utf8');
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    console.error('Failed to persist preferences:', err);
+  }
+}
+
+function getPreferences() {
+  return { ...preferences };
+}
+
+function updatePreferences(patch) {
+  if (!patch || typeof patch !== 'object') return getPreferences();
+  const merged = { ...preferences };
+  for (const [key, value] of Object.entries(patch)) {
+    if (Object.prototype.hasOwnProperty.call(DEFAULT_PREFERENCES, key)) {
+      merged[key] = value;
+    }
+  }
+  preferences = coercePreferences(merged);
+  savePreferences();
+  return getPreferences();
+}
+
+function getSearchEngineTemplate() {
+  const id = preferences.searchEngine;
+  const option = SEARCH_ENGINE_OPTIONS.find((opt) => opt.id === id);
+  return option ? option.template : SEARCH_ENGINE_OPTIONS[0].template;
+}
+
+function registerStartupRestoreHandler(handler) {
+  startupRestoreHandler = typeof handler === 'function' ? handler : null;
+}
+
+// ============ /Preferences ============
 
 function loadRecentDownloads() {
   try {
@@ -330,9 +445,12 @@ function updateBookmark(id, patch) {
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
+  loadPreferences();
   loadRecentDownloads();
   loadHistory();
   loadBookmarks();
+  loadSavedSession();
+  loadRecentlyClosed();
   setupDownloadTracking();
   createMainWindow();
 
@@ -468,3 +586,217 @@ ipcMain.handle('bookmarks:remove', (_event, id) => {
 ipcMain.handle('bookmarks:update', (_event, id, patch) => {
   if (typeof id === 'string') updateBookmark(id, patch || {});
 });
+
+// ============ Settings IPC ============
+
+ipcMain.handle('settings:get', () => getPreferences());
+
+ipcMain.handle('settings:set', (_event, patch) => updatePreferences(patch || {}));
+
+ipcMain.handle('settings:list-search-engines', () => SEARCH_ENGINE_OPTIONS);
+
+ipcMain.handle('settings:list-startup-behaviors', () => STARTUP_BEHAVIOR_OPTIONS);
+
+ipcMain.handle('settings:pick-download-directory', async () => {
+  const result = await dialog.showOpenDialog({
+    title: '选择下载目录',
+    properties: ['openDirectory']
+  });
+  if (result.canceled || !result.filePaths || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle('settings:has-restore-handler', () => startupRestoreHandler !== null);
+
+ipcMain.handle('settings:invoke-restore', async () => {
+  if (typeof startupRestoreHandler !== 'function') return false;
+  try {
+    return Boolean(await startupRestoreHandler());
+  } catch (err) {
+    console.error('Startup restore handler failed:', err);
+    return false;
+  }
+});
+
+// ============ Session Restore ============
+
+const SESSION_VERSION = 1;
+const RECENTLY_CLOSED_VERSION = 1;
+const RECENTLY_CLOSED_CAP = 20;
+const MAX_RESTORE_TABS = 50;
+
+let savedSession = { version: SESSION_VERSION, tabs: [], activeTabId: null, savedAt: 0 };
+let recentlyClosedEntries = [];
+
+function sessionFilePath() {
+  return path.join(app.getPath('userData'), 'session.json');
+}
+
+function recentlyClosedFilePath() {
+  return path.join(app.getPath('userData'), 'recently-closed.json');
+}
+
+function coerceSessionTab(input) {
+  if (!input || typeof input !== 'object') return null;
+  const url = typeof input.url === 'string' ? input.url : '';
+  if (!url) return null;
+  const internalPage = typeof input.internalPage === 'string' ? input.internalPage : '';
+  return {
+    url,
+    title: typeof input.title === 'string' && input.title ? input.title : '',
+    internalPage,
+    active: Boolean(input.active)
+  };
+}
+
+function loadSavedSession() {
+  try {
+    const raw = fs.readFileSync(sessionFilePath(), 'utf8');
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') {
+      savedSession = { version: SESSION_VERSION, tabs: [], activeTabId: null, savedAt: 0 };
+      return;
+    }
+    const rawTabs = Array.isArray(data.tabs) ? data.tabs : [];
+    const tabs = rawTabs
+      .map(coerceSessionTab)
+      .filter(Boolean)
+      .slice(0, MAX_RESTORE_TABS);
+    const activeTabId = typeof data.activeTabId === 'string' ? data.activeTabId : null;
+    savedSession = {
+      version: SESSION_VERSION,
+      tabs,
+      activeTabId,
+      savedAt: typeof data.savedAt === 'number' ? data.savedAt : 0
+    };
+  } catch {
+    savedSession = { version: SESSION_VERSION, tabs: [], activeTabId: null, savedAt: 0 };
+  }
+}
+
+function saveSessionSnapshot(input) {
+  const incomingTabs = input && Array.isArray(input.tabs) ? input.tabs : [];
+  const activeTabId = input && typeof input.activeTabId === 'string' ? input.activeTabId : null;
+  const tabs = incomingTabs
+    .map(coerceSessionTab)
+    .filter(Boolean)
+    .slice(0, MAX_RESTORE_TABS)
+    .map((tab) => ({ ...tab, active: false }));
+
+  if (activeTabId) {
+    const activeIdx = incomingTabs.findIndex((item) => item && item.id === activeTabId);
+    if (activeIdx >= 0 && tabs[activeIdx]) tabs[activeIdx].active = true;
+  }
+
+  savedSession = {
+    version: SESSION_VERSION,
+    tabs,
+    activeTabId: activeTabId && tabs.some((t) => t.active) ? activeTabId : null,
+    savedAt: Date.now()
+  };
+
+  try {
+    const payload = JSON.stringify(savedSession, null, 2);
+    const filePath = sessionFilePath();
+    const tmp = `${filePath}.tmp`;
+    fs.writeFileSync(tmp, payload, 'utf8');
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    console.error('Failed to persist session:', err);
+  }
+}
+
+function clearSavedSession() {
+  savedSession = { version: SESSION_VERSION, tabs: [], activeTabId: null, savedAt: 0 };
+  try {
+    const filePath = sessionFilePath();
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+  } catch (err) {
+    console.error('Failed to clear session:', err);
+  }
+}
+
+function loadRecentlyClosed() {
+  try {
+    const raw = fs.readFileSync(recentlyClosedFilePath(), 'utf8');
+    const data = JSON.parse(raw);
+    if (data && Array.isArray(data.entries)) {
+      recentlyClosedEntries = data.entries
+        .map(coerceSessionTab)
+        .filter(Boolean)
+        .slice(0, RECENTLY_CLOSED_CAP);
+    } else {
+      recentlyClosedEntries = [];
+    }
+  } catch {
+    recentlyClosedEntries = [];
+  }
+}
+
+function saveRecentlyClosed() {
+  try {
+    const payload = JSON.stringify({
+      version: RECENTLY_CLOSED_VERSION,
+      entries: recentlyClosedEntries.slice(0, RECENTLY_CLOSED_CAP)
+    }, null, 2);
+    const filePath = recentlyClosedFilePath();
+    const tmp = `${filePath}.tmp`;
+    fs.writeFileSync(tmp, payload, 'utf8');
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    console.error('Failed to persist recently closed tabs:', err);
+  }
+}
+
+function pushRecentlyClosed(input) {
+  const entry = coerceSessionTab(input);
+  if (!entry) return null;
+  recentlyClosedEntries = recentlyClosedEntries.filter(
+    (item) => !(item.url === entry.url && item.internalPage === entry.internalPage)
+  );
+  recentlyClosedEntries.unshift(entry);
+  recentlyClosedEntries = recentlyClosedEntries.slice(0, RECENTLY_CLOSED_CAP);
+  saveRecentlyClosed();
+  return entry;
+}
+
+function popRecentlyClosed() {
+  if (recentlyClosedEntries.length === 0) return null;
+  const [entry, ...rest] = recentlyClosedEntries;
+  recentlyClosedEntries = rest;
+  saveRecentlyClosed();
+  return entry;
+}
+
+// Default restore handler — returns true iff session.json contains tabs.
+registerStartupRestoreHandler(() => savedSession.tabs.length > 0);
+
+// ============ /Session Restore ============
+
+// ============ Session Restore IPC ============
+
+ipcMain.handle('session:save', (_event, snapshot) => {
+  saveSessionSnapshot(snapshot || {});
+  return savedSession.tabs.length > 0;
+});
+
+ipcMain.handle('session:load', () => {
+  if (savedSession.tabs.length === 0) return null;
+  return {
+    tabs: savedSession.tabs,
+    activeTabId: savedSession.activeTabId,
+    savedAt: savedSession.savedAt
+  };
+});
+
+ipcMain.handle('session:clear', () => {
+  clearSavedSession();
+});
+
+ipcMain.handle('session:push-recently-closed', (_event, entry) => {
+  pushRecentlyClosed(entry);
+});
+
+ipcMain.handle('session:list-recently-closed', () => recentlyClosedEntries);
+
+ipcMain.handle('session:pop-recently-closed', () => popRecentlyClosed());

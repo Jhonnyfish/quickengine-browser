@@ -20,6 +20,7 @@ import {
   PlusIcon,
   RefreshCwIcon,
   SearchIcon,
+  SettingsIcon,
   ShieldAlertIcon,
   SparklesIcon,
   SquareIcon,
@@ -40,14 +41,23 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import type { Bookmark, DownloadItem, HistoryEntry } from "./types/electron"
+import type {
+  Bookmark,
+  BrowserPreferences,
+  DownloadItem,
+  HistoryEntry,
+  SavedSession,
+  SearchEngineOption,
+  StartupBehaviorOption,
+} from "./types/electron"
 
 const NEW_TAB_URL = "kuaiqing://newtab"
-const HOME_URL = NEW_TAB_URL
-const SEARCH_URL = "https://www.baidu.com/s?wd="
+const DEFAULT_HOME_URL = NEW_TAB_URL
+const DEFAULT_SEARCH_URL = "https://www.baidu.com/s?wd="
 const INTERNAL_VERSION_URL = "chrome://version"
+const INTERNAL_SETTINGS_URL = "kuaiqing://settings"
 
-type InternalPageKey = "" | "newtab" | "version"
+type InternalPageKey = "" | "newtab" | "version" | "settings"
 
 type BrowserTab = {
   id: string
@@ -175,6 +185,10 @@ function getInternalPageKey(value: string): InternalPageKey {
     return "version"
   }
 
+  if (["kuaiqing://settings", "kuaiqing://settings/", "quickengine://settings"].includes(text)) {
+    return "settings"
+  }
+
   return ""
 }
 
@@ -182,11 +196,13 @@ function isInternalUrl(value: string) {
   return Boolean(getInternalPageKey(value))
 }
 
-function normalizeInput(value: string) {
+function normalizeInput(value: string, options: { searchUrl?: string; homeUrl?: string } = {}) {
   const text = value.trim()
+  const searchUrl = options.searchUrl ?? DEFAULT_SEARCH_URL
+  const homeUrl = options.homeUrl ?? DEFAULT_HOME_URL
 
   if (!text) {
-    return HOME_URL
+    return homeUrl
   }
 
   const internalPage = getInternalPageKey(text)
@@ -197,6 +213,10 @@ function normalizeInput(value: string) {
 
   if (internalPage === "version") {
     return INTERNAL_VERSION_URL
+  }
+
+  if (internalPage === "settings") {
+    return INTERNAL_SETTINGS_URL
   }
 
   if (/^(localhost|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?(?:\/.*)?$/i.test(text)) {
@@ -222,7 +242,7 @@ function normalizeInput(value: string) {
     }
   }
 
-  return `${SEARCH_URL}${encodeURIComponent(text)}`
+  return `${searchUrl}${encodeURIComponent(text)}`
 }
 
 function escapeHtml(value: unknown) {
@@ -992,6 +1012,230 @@ function BookmarksPanel({
   )
 }
 
+function SettingsPage({
+  preferences,
+  searchEngines,
+  startupBehaviors,
+  onChange,
+  onPickDownloadDirectory,
+  onAddStartupPage,
+  onRemoveStartupPage,
+}: {
+  preferences: BrowserPreferences
+  searchEngines: SearchEngineOption[]
+  startupBehaviors: StartupBehaviorOption[]
+  onChange: (patch: Partial<BrowserPreferences>) => void
+  onPickDownloadDirectory: () => Promise<string | null>
+  onAddStartupPage: (url: string) => void
+  onRemoveStartupPage: (url: string) => void
+}) {
+  const [startupPageDraft, setStartupPageDraft] = useState("")
+  const [statusMessage, setStatusMessage] = useState<string | null>(null)
+
+  function flash(message: string) {
+    setStatusMessage(message)
+    window.setTimeout(() => setStatusMessage(null), 1800)
+  }
+
+  function handleSearchEngineChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    onChange({ searchEngine: event.target.value })
+    flash("默认搜索引擎已更新")
+  }
+
+  function handleStartupBehaviorChange(event: React.ChangeEvent<HTMLSelectElement>) {
+    onChange({ startupBehavior: event.target.value as BrowserPreferences["startupBehavior"] })
+    flash("启动行为已更新")
+  }
+
+  function handleHomePageChange(event: React.ChangeEvent<HTMLInputElement>) {
+    onChange({ homePage: event.target.value.trim() || DEFAULT_HOME_URL })
+  }
+
+  function handleHomePageBlur() {
+    flash("主页已更新")
+  }
+
+  async function handlePickDirectory() {
+    const selected = await onPickDownloadDirectory()
+    if (selected) {
+      onChange({ downloadDirectory: selected })
+      flash("下载目录已更新")
+    }
+  }
+
+  function handleResetDownloadDirectory() {
+    onChange({ downloadDirectory: "" })
+    flash("下载目录已恢复为系统默认")
+  }
+
+  function handleAddStartupPage(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const url = startupPageDraft.trim()
+    if (!url) return
+    if (preferences.startupPages.includes(url)) {
+      setStartupPageDraft("")
+      return
+    }
+    onAddStartupPage(url)
+    setStartupPageDraft("")
+    flash("启动页面已添加")
+  }
+
+  return (
+    <section className="settings-page" aria-label="快擎浏览器设置">
+      <div className="settings-content">
+        <header className="settings-header">
+          <KuaiqingLogo size={32} />
+          <div>
+            <h1>设置</h1>
+            <p>自定义搜索、启动、主页与下载等浏览器偏好</p>
+          </div>
+        </header>
+
+        <section className="settings-section">
+          <header className="settings-section-header">
+            <SearchIcon aria-hidden="true" />
+            <div>
+              <h2>搜索引擎</h2>
+              <p>从地址栏或新标签页提交搜索时使用的引擎</p>
+            </div>
+          </header>
+          <div className="settings-row">
+            <label htmlFor="settings-search-engine">默认搜索引擎</label>
+            <select
+              id="settings-search-engine"
+              value={preferences.searchEngine}
+              onChange={handleSearchEngineChange}
+            >
+              {searchEngines.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <header className="settings-section-header">
+            <ZapIcon aria-hidden="true" />
+            <div>
+              <h2>启动行为</h2>
+              <p>选择应用启动时打开的内容</p>
+            </div>
+          </header>
+          <div className="settings-row">
+            <label htmlFor="settings-startup-behavior">启动时</label>
+            <select
+              id="settings-startup-behavior"
+              value={preferences.startupBehavior}
+              onChange={handleStartupBehaviorChange}
+            >
+              {startupBehaviors.map((option) => (
+                <option key={option.id} value={option.id}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          {preferences.startupBehavior === "configured-pages" ? (
+            <div className="settings-startup-pages">
+              <ul className="settings-startup-page-list">
+                {preferences.startupPages.length === 0 ? (
+                  <li className="settings-startup-page-empty">尚未添加启动页面</li>
+                ) : (
+                  preferences.startupPages.map((url) => (
+                    <li key={url}>
+                      <span className="settings-startup-page-url" title={url}>
+                        {url}
+                      </span>
+                      <Button
+                        aria-label="移除启动页面"
+                        size="icon-xs"
+                        title="移除"
+                        variant="ghost"
+                        onClick={() => onRemoveStartupPage(url)}
+                      >
+                        <XIcon aria-hidden="true" />
+                      </Button>
+                    </li>
+                  ))
+                )}
+              </ul>
+              <form className="settings-startup-page-form" onSubmit={handleAddStartupPage}>
+                <input
+                  autoComplete="off"
+                  placeholder="添加启动页面 URL"
+                  spellCheck={false}
+                  value={startupPageDraft}
+                  onChange={(event) => setStartupPageDraft(event.target.value)}
+                />
+                <Button type="submit" variant="ghost">
+                  添加
+                </Button>
+              </form>
+            </div>
+          ) : null}
+        </section>
+
+        <section className="settings-section">
+          <header className="settings-section-header">
+            <HomeIcon aria-hidden="true" />
+            <div>
+              <h2>主页</h2>
+              <p>点击工具栏主页按钮时打开的地址</p>
+            </div>
+          </header>
+          <div className="settings-row">
+            <label htmlFor="settings-home-page">主页地址</label>
+            <input
+              id="settings-home-page"
+              autoComplete="off"
+              placeholder={DEFAULT_HOME_URL}
+              spellCheck={false}
+              value={preferences.homePage}
+              onChange={handleHomePageChange}
+              onBlur={handleHomePageBlur}
+            />
+          </div>
+        </section>
+
+        <section className="settings-section">
+          <header className="settings-section-header">
+            <DownloadIcon aria-hidden="true" />
+            <div>
+              <h2>下载</h2>
+              <p>选择保存下载文件的目录</p>
+            </div>
+          </header>
+          <div className="settings-row">
+            <label>下载目录</label>
+            <div className="settings-download-directory">
+              <span className="settings-download-directory-path" title={preferences.downloadDirectory}>
+                {preferences.downloadDirectory || "系统默认（下载文件夹）"}
+              </span>
+              <div className="settings-download-directory-actions">
+                <Button variant="ghost" onClick={handlePickDirectory}>
+                  选择文件夹
+                </Button>
+                {preferences.downloadDirectory ? (
+                  <Button variant="ghost" onClick={handleResetDownloadDirectory}>
+                    恢复默认
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div className={cn("settings-flash", statusMessage && "is-visible")} aria-live="polite">
+          {statusMessage}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 export function App() {
   const browserStackRef = useRef<HTMLDivElement | null>(null)
   const webviewsRef = useRef(new Map<string, BrowserWebView>())
@@ -1011,7 +1255,23 @@ export function App() {
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([])
   const [activePanel, setActivePanel] = useState<null | "downloads" | "history" | "bookmarks">(null)
   const [addressSuggestions, setAddressSuggestions] = useState<Array<{ url: string; title: string; favicon?: string; kind: "history" | "bookmark" }>>([])
+  const [preferences, setPreferences] = useState<BrowserPreferences>({
+    searchEngine: "baidu",
+    startupBehavior: "new-tab",
+    homePage: DEFAULT_HOME_URL,
+    downloadDirectory: "",
+    startupPages: [],
+  })
+  const [searchEngines, setSearchEngines] = useState<SearchEngineOption[]>([])
+  const [startupBehaviors, setStartupBehaviors] = useState<StartupBehaviorOption[]>([])
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false)
   const prevDownloadStatesRef = useRef(new Map<string, string>())
+
+  const homeUrl = preferences.homePage || DEFAULT_HOME_URL
+  const searchUrl = useMemo(() => {
+    const option = searchEngines.find((item) => item.id === preferences.searchEngine)
+    return option ? option.template : DEFAULT_SEARCH_URL
+  }, [searchEngines, preferences.searchEngine])
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
@@ -1098,6 +1358,25 @@ export function App() {
         internalPage: "newtab",
         url: NEW_TAB_URL,
         title: "新标签页",
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        favicon: "",
+      })
+
+      if (activeTabIdRef.current === tabId) {
+        setActiveTab(tabId)
+      }
+
+      return true
+    }
+
+    if (pageKey === "settings") {
+      webviewsRef.current.get(tabId)?.stop?.()
+      updateTab(tabId, {
+        internalPage: "settings",
+        url: INTERNAL_SETTINGS_URL,
+        title: "设置",
         loading: false,
         canGoBack: false,
         canGoForward: false,
@@ -1265,7 +1544,7 @@ export function App() {
     })
   }
 
-  function createTab(initialUrl = HOME_URL, options: { activate?: boolean } = {}) {
+  function createTab(initialUrl = homeUrl, options: { activate?: boolean } = {}) {
     const browserStack = browserStackRef.current
 
     if (!browserStack) {
@@ -1274,10 +1553,22 @@ export function App() {
 
     const tabId = `tab-${nextTabIdRef.current++}`
     const internalPage = getInternalPageKey(initialUrl)
+    const initialTitle =
+      internalPage === "version"
+        ? "版本信息"
+        : internalPage === "settings"
+          ? "设置"
+          : "新标签页"
+    const initialUrlResolved =
+      internalPage === "newtab"
+        ? NEW_TAB_URL
+        : internalPage === "settings"
+          ? INTERNAL_SETTINGS_URL
+          : initialUrl
     const tab: BrowserTab = {
       id: tabId,
-      title: internalPage === "version" ? "版本信息" : "新标签页",
-      url: internalPage === "newtab" ? NEW_TAB_URL : initialUrl,
+      title: initialTitle,
+      url: initialUrlResolved,
       internalPage,
       loading: false,
       canGoBack: false,
@@ -1313,6 +1604,15 @@ export function App() {
       return
     }
 
+    const closingTab = current[closingIndex]
+    if (closingTab && closingTab.url && !closingTab.internalPage) {
+      void window.quickEngine.session.pushRecentlyClosed({
+        url: closingTab.url,
+        title: closingTab.title || closingTab.url,
+        internalPage: closingTab.internalPage,
+      })
+    }
+
     webviewsRef.current.get(tabId)?.remove()
     webviewsRef.current.delete(tabId)
 
@@ -1321,7 +1621,7 @@ export function App() {
 
     if (remaining.length === 0) {
       setActiveTab(null)
-      createTab(HOME_URL)
+      createTab(homeUrl)
       return
     }
 
@@ -1343,7 +1643,7 @@ export function App() {
   }
 
   function submitAddressInput(value: string) {
-    navigateActiveTab(normalizeInput(value))
+    navigateActiveTab(normalizeInput(value, { searchUrl, homeUrl }))
   }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -1365,13 +1665,108 @@ export function App() {
   }, [activeTab?.url, activeTabId])
 
   useEffect(() => {
-    if (initializedRef.current) {
+    if (initializedRef.current) return
+    if (!preferencesLoaded) return
+
+    initializedRef.current = true
+    void performStartup()
+  }, [preferencesLoaded])
+
+  async function performStartup() {
+    const behavior = preferences.startupBehavior
+    if (behavior === "restore-last-session") {
+      const session = await window.quickEngine.session.load()
+      if (session && session.tabs.length > 0) {
+        const restoredCount = restoreFromSession(session)
+        if (restoredCount > 0) {
+          showStatus(`已恢复 ${restoredCount} 个标签页`)
+          return
+        }
+      }
+    }
+
+    if (behavior === "configured-pages" && preferences.startupPages.length > 0) {
+      for (let index = 0; index < preferences.startupPages.length; index += 1) {
+        const pageUrl = preferences.startupPages[index]
+        const normalized = normalizeInput(pageUrl, { searchUrl, homeUrl })
+        createTab(normalized, { activate: index === 0 })
+      }
       return
     }
 
-    initializedRef.current = true
-    createTab(HOME_URL)
-  }, [])
+    createTab(homeUrl)
+  }
+
+  function restoreFromSession(session: SavedSession): number {
+    let restoredCount = 0
+    let activateId: string | null = null
+
+    session.tabs.forEach((saved) => {
+      const id = `tab-${nextTabIdRef.current++}`
+      const internalPage = (saved.internalPage as InternalPageKey) || getInternalPageKey(saved.url)
+      const resolvedUrl =
+        internalPage === "newtab"
+          ? NEW_TAB_URL
+          : internalPage === "settings"
+            ? INTERNAL_SETTINGS_URL
+            : internalPage === "version"
+              ? INTERNAL_VERSION_URL
+              : saved.url
+      const tab: BrowserTab = {
+        id,
+        title: saved.title || resolvedUrl || "新标签页",
+        url: resolvedUrl,
+        internalPage,
+        loading: false,
+        canGoBack: false,
+        canGoForward: false,
+        favicon: "",
+      }
+
+      const browserStack = browserStackRef.current
+      if (!browserStack) return
+
+      const webview = document.createElement("webview") as BrowserWebView
+      webview.className = "browser-view"
+      webview.dataset.tabId = id
+      webview.setAttribute("src", "about:blank")
+      webview.setAttribute("partition", "persist:quick-engine")
+      webview.setAttribute(
+        "webpreferences",
+        "contextIsolation=yes,nodeIntegration=no,javascript=yes",
+      )
+      webviewsRef.current.set(id, webview)
+      attachWebviewEvents(id, webview)
+      browserStack.append(webview)
+
+      setTabsSynced((current) => [...current, tab])
+
+      if (saved.active) {
+        activateId = id
+      }
+
+      if (!internalPage) {
+        void Promise.resolve(webview.loadURL(resolvedUrl)).catch(() => {
+          updateTab(id, { title: "页面加载失败", loading: false })
+        })
+      } else if (internalPage === "version") {
+        void loadInternalPage(id, INTERNAL_VERSION_URL)
+      }
+
+      restoredCount += 1
+    })
+
+    if (restoredCount === 0) return 0
+
+    if (activateId) {
+      setActiveTab(activateId)
+    } else {
+      const fallbackId = tabsRef.current[tabsRef.current.length - restoredCount]?.id ?? null
+      if (fallbackId) setActiveTab(fallbackId)
+    }
+
+    return restoredCount
+  }
 
   useEffect(() => {
     let disposed = false
@@ -1426,6 +1821,16 @@ export function App() {
   useEffect(() => {
     void window.quickEngine.history.list().then(setHistory)
     void window.quickEngine.bookmarks.list().then(setBookmarks)
+    void Promise.all([
+      window.quickEngine.settings.get(),
+      window.quickEngine.settings.listSearchEngines(),
+      window.quickEngine.settings.listStartupBehaviors(),
+    ]).then(([prefs, engines, behaviors]) => {
+      setPreferences(prefs)
+      setSearchEngines(engines)
+      setStartupBehaviors(behaviors)
+      setPreferencesLoaded(true)
+    })
   }, [])
 
   useEffect(() => {
@@ -1518,6 +1923,67 @@ export function App() {
     navigateActiveTab(url)
   }
 
+  function handlePreferencesChange(patch: Partial<BrowserPreferences>) {
+    void window.quickEngine.settings.set(patch).then((next) => {
+      setPreferences(next)
+    })
+  }
+
+  function handleAddStartupPage(url: string) {
+    const next = Array.from(new Set([...preferences.startupPages, url])).slice(0, 10)
+    handlePreferencesChange({ startupPages: next })
+  }
+
+  function handleRemoveStartupPage(url: string) {
+    const next = preferences.startupPages.filter((item) => item !== url)
+    handlePreferencesChange({ startupPages: next })
+  }
+
+  const sessionSaveTimerRef = useRef<number | undefined>(undefined)
+
+  useEffect(() => {
+    if (!initializedRef.current) return
+    if (sessionSaveTimerRef.current !== undefined) {
+      window.clearTimeout(sessionSaveTimerRef.current)
+    }
+    sessionSaveTimerRef.current = window.setTimeout(() => {
+      const snapshot = {
+        tabs: tabsRef.current.map((tab) => ({
+          id: tab.id,
+          url: tab.url,
+          title: tab.title,
+          internalPage: tab.internalPage,
+        })),
+        activeTabId: activeTabIdRef.current,
+      }
+      void window.quickEngine.session.save(snapshot)
+    }, 600)
+    return () => {
+      if (sessionSaveTimerRef.current !== undefined) {
+        window.clearTimeout(sessionSaveTimerRef.current)
+        sessionSaveTimerRef.current = undefined
+      }
+    }
+  }, [tabs, activeTabId])
+
+  async function handleReopenClosedTab() {
+    const entry = await window.quickEngine.session.popRecentlyClosed()
+    if (!entry) {
+      showStatus("没有可恢复的标签页")
+      return
+    }
+    const resolved =
+      entry.internalPage === "newtab"
+        ? NEW_TAB_URL
+        : entry.internalPage === "settings"
+          ? INTERNAL_SETTINGS_URL
+          : entry.internalPage === "version"
+            ? INTERNAL_VERSION_URL
+            : entry.url
+    createTab(resolved)
+    showStatus("已恢复关闭的标签页")
+  }
+
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       const modifierPressed = event.ctrlKey || event.metaKey
@@ -1531,7 +1997,12 @@ export function App() {
 
       if (modifierPressed && event.key.toLowerCase() === "t") {
         event.preventDefault()
-        createTab(HOME_URL)
+        createTab(homeUrl)
+      }
+
+      if (modifierPressed && event.shiftKey && event.key.toLowerCase() === "t") {
+        event.preventDefault()
+        void handleReopenClosedTab()
       }
 
       if (modifierPressed && event.key.toLowerCase() === "w") {
@@ -1594,6 +2065,8 @@ export function App() {
                       <KuaiqingLogo className="tab-brand-mark" size={15} />
                     ) : tab.internalPage === "version" ? (
                       <BadgeInfoIcon aria-hidden="true" className="tab-icon" />
+                    ) : tab.internalPage === "settings" ? (
+                      <SettingsIcon aria-hidden="true" className="tab-icon" />
                     ) : (
                       <ZapIcon aria-hidden="true" className="tab-icon" />
                     )}
@@ -1617,7 +2090,7 @@ export function App() {
             <ToolButton
               className="browser-new-tab-button"
               label="新建标签页"
-              onClick={() => createTab(HOME_URL)}
+              onClick={() => createTab(homeUrl)}
             >
               <PlusIcon aria-hidden="true" />
             </ToolButton>
@@ -1670,7 +2143,7 @@ export function App() {
                   <RefreshCwIcon aria-hidden="true" />
                 )}
               </ToolButton>
-              <ToolButton label="主页" onClick={() => navigateActiveTab(HOME_URL)}>
+              <ToolButton label="主页" onClick={() => navigateActiveTab(homeUrl)}>
                 <HomeIcon aria-hidden="true" />
               </ToolButton>
             </div>
@@ -1751,6 +2224,12 @@ export function App() {
               >
                 <DownloadIcon aria-hidden="true" />
               </ToolButton>
+              <ToolButton
+                label="设置"
+                onClick={() => navigateActiveTab(INTERNAL_SETTINGS_URL)}
+              >
+                <SettingsIcon aria-hidden="true" />
+              </ToolButton>
               <div className="browser-avatar" aria-label="快擎账号">
                 擎
               </div>
@@ -1766,6 +2245,17 @@ export function App() {
               history={history}
               onNavigate={navigateActiveTab}
               onSubmitInput={submitAddressInput}
+            />
+          ) : null}
+          {activeTab?.internalPage === "settings" ? (
+            <SettingsPage
+              preferences={preferences}
+              searchEngines={searchEngines}
+              startupBehaviors={startupBehaviors}
+              onChange={handlePreferencesChange}
+              onPickDownloadDirectory={window.quickEngine.settings.pickDownloadDirectory}
+              onAddStartupPage={handleAddStartupPage}
+              onRemoveStartupPage={handleRemoveStartupPage}
             />
           ) : null}
           <DownloadsPanel
